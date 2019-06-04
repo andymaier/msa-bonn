@@ -84,3 +84,5 @@
 [2019-06-04 17:09:44,203] INFO [GroupCoordinator 0]: Stabilized group catalogue-1 generation 39 (__consumer_offsets-43) (kafka.coordinator.group.GroupCoordinator)
 [2019-06-04 17:09:44,204] INFO [GroupCoordinator 0]: Assignment received from leader for group catalogue-1 for generation 39 (kafka.coordinator.group.GroupCoordinator)
 [2019-06-04 17:13:02,788] INFO [GroupMetadataManager brokerId=0] Removed 0 expired offsets in 0 milliseconds. (kafka.coordinator.group.GroupMetadataManager)
+[2019-06-04 17:23:02,808] INFO [GroupMetadataManager brokerId=0] Removed 0 expired offsets in 0 milliseconds. (kafka.coordinator.group.GroupMetadataManager)
+[2019-06-04 17:33:02,823] INFO [GroupMetadataManager brokerId=0] Removed 0 expired offsets in 1 milliseconds. (kafka.coordinator.group.GroupMetadataManager)
