@@ -1,0 +1,305 @@
+# msa-catalogue aus implementieren
+
+POST Methode:
+@PostMapping
+public void create(@RequestBody Article article) {
+ System.out.println("article = " + article);
+}
+
+Devtools hinzufügen aus dem Demo Projekt
+<dependency>
+ <groupId>org.springframework.boot</groupId>
+ <artifactId>spring-boot-devtools</artifactId>
+ <scope>runtime</scope>
+ <optional>true</optional>
+</dependency>
+
+Aktivieren in IntelliJ „Build Project automatically“
+->  nicht vergessen in der IntelliJ Registry „compiler.automake.allow.when.app.running“ zu aktivieren
+
+Ausbauen auf:
+
+@PostMapping
+public void create(@RequestBody Article article) {
+ System.out.println("article = " + article);
+
+ article.setUuid(UUID.randomUUID().toString());
+
+ repo.save(article);
+
+}
+
+Arbeiten mit Curl:
+curl http://localhost:8080/articles -d '{"name":"Dampfnudeln", "price":2.80}' -H "Content-Type: application/json" -v
+
+Ausbau mit dem UriComponentesBuilder
+@PostMapping
+public ResponseEntity<Article> create(@RequestBody Article article, UriComponentsBuilder builder) {
+ System.out.println("article = " + article);
+
+ String uuid = UUID.randomUUID().toString();
+ article.setUuid(uuid);
+
+ repo.save(article);
+ return ResponseEntity.created(builder.path("/articles/" + uuid).build().toUri()).body(article);
+}
+
+Article abfragen mit der id @GetMapping
+@GetMapping("/{id}")
+public Article get(@PathVariable String id) {
+  return repo.findById(id).orElseThrow(() -> {
+    return new NotFoundException();
+  });
+}
+
+Delete Mapping
+@DeleteMapping("/{id}")
+public void delete(@PathVariable String id) {
+  repo.delete(get(id));
+}
+
+PutMapping
+@PutMapping("/{id}")
+public void change(@PathVariable String id, @RequestBody Article article) {
+  get(id);
+
+  article.setUuid(id);
+  repo.save(article);
+}
+
+PathMapping - durchführen von Teiländerungen an einem Article
+Es wird die id über @PathVariable Übergeben und ein Body. Diesen verwenden wir um die Änderungen durchzuführen.
+
+@PatchMapping("/{id}")
+public void patch(@PathVariable String id, @RequestBody JsonNode json) {
+
+  Article old = get(id);
+
+  //JSON hat drei Zustände: kein Attribut, null, Wert
+  if(json.has(PRICE)) {
+    if(json.hasNonNull(PRICE)) {
+      old.setPrice(new BigDecimal(json.get(PRICE).asDouble()));
+    } else {
+      old.setPrice(null);
+    }
+  }
+
+  if(json.has(NAME)) {
+    old.setName(json.get(NAME).asText());
+  }
+  repo.save(old);
+}
+
+# Kafka und Zookeeper Start
+
+1. Kafka herunterladen und entpacken
+2. ../config/server.properties anpassen wie folgt:
+
+listeners=PLAINTEXT://127.0.0.1:9092
+advertised.listeners=PLAINTEXT://127.0.0.1:9092
+
+log.dirs=/Users/andreasmaier/tmp/kafka-logs
+3. Zookeeper starten mit ./zookeeper-start.sh ../config/zookeeper.properties
+4. Kafka starten mit ./kafka-server-start.sh ../config/server.properties
+
+console consumer und Konsole producer
+
+./kafka-console-producer.sh --broker-list localhost:9092 --topic shop
+./kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic shop --from-beginning
+
+Schreiben auf den Bus vom Catalogue Service in der @Post Methode:
+
+Operation op = new Operation("article", "upsert", mapper.valueToTree(article));
+kafka.send(new ProducerRecord<>("shop", op));
+
+-> Prüfen das auf dem Bus die Nachricht erscheint.
+
+#Shop Listener
+
+@KafkaListener(topics = "shop")
+public void listen(Operation op) throws Exception {
+ System.out.println("op = " + op);
+
+ Article article = mapper.treeToValue(op.getObject(), Article.class);
+ repo.save(article);
+}
+
+Kafka Listener aktivieren und den Article in die DB schreiben.
+
+# DELETE implementieren
+
+Im Listener
+@KafkaListener(topics = "shop")
+public void listen(Operation op) throws Exception {
+ System.out.println("op = " + op);
+
+ Article article = mapper.treeToValue(op.getObject(), Article.class);
+
+ switch (op.getAction()) {
+  case "upsert":
+   repo.save(article);
+   break;
+  case "remove":
+   repo.delete(article);
+   break;
+ }
+}
+
+Im Controller:
+@DeleteMapping("/{id}")
+public void delete(@PathVariable String id) {
+  Article article = get(id);
+
+  Operation op = new Operation("article", "remove", mapper.valueToTree(article));
+  kafka.send(new ProducerRecord<>("shop", op));
+
+  //ist nun im Listener
+  //repo.delete();
+}
+
+
+# Stock Controller  - hier die Auslieferung aus der Concurrent HashMap erreichen mit folgenden Änderungen:
+
+@GetMapping
+public Collection<Stock> index() {
+ return stocks.values();
+}
+
+@GetMapping("/count")
+public long count() {
+ return stocks.size();
+}
+
+# Stock Listner Operationen umsetzen für das erstellen und löschen der Article
+
+package com.predic8.stock.event;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.predic8.stock.model.Stock;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.stereotype.Service;
+
+@Service
+public class ShopListener {
+ private final ObjectMapper mapper;
+ private final NullAwareBeanUtilsBean beanUtils;
+ private Map<String, Stock> stocks;
+
+ public ShopListener(ObjectMapper mapper, NullAwareBeanUtilsBean beanUtils, Map<String, Stock> stocks) {
+  this.mapper = mapper;
+  this.beanUtils = beanUtils;
+  this.stocks = stocks;
+ }
+
+ @KafkaListener(topics = "shop")
+ public void listen(Operation op) throws Exception {
+  System.out.println("op = " + op);
+
+  Stock stock = mapper.treeToValue(op.getObject(), Stock.class);
+
+  switch (op.getAction()) {
+   case "upsert":
+    stocks.put(stock.getUuid(), stock);
+    break;
+   case "remove":
+    stocks.remove(stock.getUuid());
+    break;
+  }
+ }
+}
+
+
+######## Tag 3 ########
+
+Sync zwischen zwei Instanzen
+Dabei haben wir den Stock Service mehrmals hochgefahren. Hierfür erstellen wir eine neuen Konfiguration bei der wir in den Program Arguements folgendes setzen:
+
+„—server-port:9081“
+
+
+# Kafka Performance Test
+
+Hierfür haben wir das Projekt article-producer ausgecheckt. Das Projekt führt im @PostContruct ein Kafka.send aus mit einem upsert von article.
+Dabei sollen der Catalogue Service sowie die beiden Stock Services die Synchronisation vornehmen in ihren Datenbanken bzw. lokalen Maps.
+
+Der Test soll zeigen wie performant Kafka selbst ist und wo der Flaschenhals entsteht. Bitte drauf achten welches Setup catalogue hat und welches Setup stock hat.
+
+# msa-logging
+Erklärung zum ELK Stack und msa-logging.
+
+Vorteile: Sobald die Lib dann enthalten ist in dem Zielprojekt wird ebenfalls das Loggen aktiv.
+
+# Prometheus und Grafana für die Health Daten aus den Services
+
+Dabei ist wie folgt vorzugehen: 
+
+1. Prometheus Endpunkt auf dem catalogue Service durchprüfen http://localhost:8080/actuator/prometheus
+2. Merken der Metriken
+3. Prometheus Download von prometheus.io/download
+4. Starten von Prometheus aus dem bin Verzeichnis
+5. Todo
+
+Grafana mit Prometheus starten und erste Dashboard gestalten
+
+
+
+# Spring Cloud Discovery
+
+1. Starten von Consul aus msa-utils/consul/start_consul.sh
+Setzen der Abhängigkeit in allen Services:
+<dependency>
+ <groupId>org.springframework.cloud</groupId>
+ <artifactId>spring-cloud-starter-consul-all</artifactId>
+</dependency>
+
+@EnableService Discovery in der Spring Boot Main Methode starten.
+
+Bitte ausführen für alle Services,  catalogue, stock, checkout.
+
+# Checkout Service weiterbauen
+
+Hier muss im Checkout Service die folgende Methode erweitert werden:
+
+public boolean areArticlesAvailable(Basket basket) {
+ return basket.getItems().stream().allMatch(item -> {
+  System.out.println("item = " + item);
+  Stock stock = restTemplate.getForObject("http://stock/stocks/{uuid}", Stock.class, item.getArticleId());
+  return stock.getQuantity() >= item.getQuantity();
+ });
+}
+
+Diese Methode ist dafür zuständig das eine Warenverfügbarkeit geprüft wird. Damit stelle ich sicher, dass keine Überverkäufe passieren.
+
+Im Stock Service diese Methode einbauen:
+
+@GetMapping("/{id}")
+public Stock getStock(@PathVariable String id) {
+ return stocks.get(id);
+}
+
+Achtung zur Sicherheit muss im Catalogue Service der Listender angepasst werden, da ansonsten Nulls übernommen werden.
+@KafkaListener(topics = "shop")
+public void listen(Operation op) throws Exception {
+ System.out.println("op = " + op);
+
+ Article article = mapper.treeToValue(op.getObject(), Article.class);
+
+ switch (op.getAction()) {
+  case "upsert":
+   Article old = repo.findById(article.getUuid()).orElse(null);
+   if (old != null) {
+    beanUtils.copyProperties(old, article);
+   } else {
+    old = article;
+   }
+   repo.save(old);
+   break;
+  case "remove":
+   repo.delete(article);
+   break;
+ }
+}
+
+Hier wird mit beanUtils.copyProperties gearbeitet.  Damit ist sichergestellt das nach DDD nur diese Werte übernommen werden die notwendig sind und keine Nulls.
