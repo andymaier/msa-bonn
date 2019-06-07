@@ -303,3 +303,259 @@ public void listen(Operation op) throws Exception {
 }
 
 Hier wird mit beanUtils.copyProperties gearbeitet.  Damit ist sichergestellt das nach DDD nur diese Werte übernommen werden die notwendig sind und keine Nulls.
+
+
+# Docker und die wesentlichen Verwaltungsbefehle
+
+- docker ps -> Prozessliste der laufenden Docker Container anzeigen
+- docker ps -a -> Prozessliste der laufenden und gestoppten Docker Container anzeigen
+- docker images oder docker image list -> Anzeigen aller verfügbaren images auf dem aktuellen Rechner
+- docker pull <ImageID oder RepositoryName> -> Herunterladen eines Images
+- docker history <ImageID> -> Anzeigen der Layers eines Images
+- docker run -it ubuntu -> Starten eines ubuntu Docker Containers interaktiv. Nach dem Start befindet man sich in der Command Line der Maschine
+- docker start <containerId oder container name> -> Starten eines gestoppten Containers mit dem Containernamen oder der containerId.
+- docker stop <containerId oder container name> -> Stoppen eines gestarteten Containers mit dem Containernamen oder der containerId.
+- docker logs <containerId oder container name> -> Einsehen der Container logs zu einem Container.
+- docker inspect <containerId oder container name oder ImageId, ImageName> -> Einsehen der Container oder Image Einstellungen
+
+# Docker Build Image
+
+1. Erstellen des Verzeichnisses "hellodocker"
+2. Erstellen der hello.sh mit folgendem Inhalt:
+
+#!/bin/sh
+echo "Hello World!"
+
+3. Erstellen eines Dockerfiles mit folgendem Inhalt:
+
+FROM alpine
+ADD *.sh /
+CMD /hello.sh
+
+4. Erstellen des Images mit: docker build -t hellodocker .
+5. Hello World! Ausgabe prüfen
+
+# Docker Build Java Image msa-catalogue
+
+1. mvn package ausführen
+2. Prüfen wie die jar Datei benannt wurde nach dem mvn package im target/xyz.jar
+3. Das Dockerfile anpassen damit der Build klappt:
+
+FROM openjdk
+COPY target/*.jar .
+CMD ["java","-jar","catalogue-1.0.0.jar","--spring.cloud.consul.host=172.17.0.1"]
+
+4. docker build -t msa-catalogue .
+5. Prüfen das Anfragen genen den Controller funktionieren.
+
+-> Hier gab es noch Probleme da es Abhängigkeiten zu Logstash, postgres und auch consul gibt.
+
+# API Gateway mit Zuul
+
+1. Auschecken des Projektes aus https://github.com/membrane/msa-gateway
+2. Prüfen des pom.xmls und der Abhängigkeiten.
+Folgende Festellungen:
+
+pom.xml
+
+		<dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-netflix-zuul</artifactId>
+		</dependency>
+
+    <dependency>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-consul-all</artifactId>
+		</dependency>
+
+API Gateway application
+
+@EnableDiscoveryClient
+@EnableZuulProxy
+@SpringBootApplication
+public class ApiGatewayApplication {
+
+	public static void main(String[] args) {
+		run(ApiGatewayApplication.class, args);
+	}
+
+}
+
+Verbindung zum Consult ist über @EnableDiscoveryClient gegeben. Die Zuul Funktionalitäten werden
+durch die Annotation @EnableZuulProxy erreicht.
+
+Zuul bietet die folgenden Funktionen: 
+
+https://github.com/Netflix/zuul/wiki
+Zuul is the front door for all requests from devices and web sites to the backend of the Netflix streaming application. 
+As an edge service application, Zuul is built to enable dynamic routing, monitoring, resiliency and security. 
+It also has the ability to route requests to multiple Amazon Auto Scaling Groups as appropriate.
+
+Nach dem Start von Zuul lassen sich die Anfragen zu msa-catalogue oder auch msa-stock wie folgt ausführen:
+
+msa-catalogue: localhost:8083/catalogue/articles
+msa-stock: localhost:8083/stock/stocks
+
+# Web Security im API Gateway Zuul
+
+pom.xml
+    <dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+Einrichten der SecurityConfiguration:
+
+1. Erstellen des Packages config
+2. Erstellen der Klasse: Security Configuration mit folgendem Inhalt:
+
+@Configuration
+@EnableWebMvc
+public class SecurityConfiguration extends WebSecurityConfigurerAdapter{
+
+  public static final String ADMIN = "ADMIN";
+  public static final String USER = "USER";
+
+  @Override
+  protected void configure(HttpSecurity http) throws Exception {
+    http.authorizeRequests()
+        .antMatchers("/stocks**").hasAnyRole(USER, ADMIN)
+        .antMatchers("**").hasAnyRole(ADMIN)
+        .and().httpBasic();
+  }
+
+  @Bean
+  @Override
+  public UserDetailsService userDetailsService() {
+    UserDetails admin = User.withDefaultPasswordEncoder().username("admin").password("admin")
+        .roles(ADMIN).build();
+
+    UserDetails user = User.withDefaultPasswordEncoder().username("benutzer").password("123")
+        .roles(USER).build();
+
+    return new InMemoryUserDetailsManager(admin, user);
+  }
+}
+
+3. In configure werden die folgenden Werte konfiguriert:
+- Routen die gesichert werden sollen
+- mit welcher Rolle werden die Routen gesichert
+- welche Sicherheitskonfiguration wird vorgenommen
+
+4. Testen der Routen: 
+localhost:8083/stock/stocks kann nun nicht ohne Authentifizierung angesprochen werden.
+Sobald Benutzernamen und Passwort mitgegeben werden aus der Rolle USER oder ADMIN erfolgt ein erfolgreicher Abruf.
+
+localhost:8083/stock/actuator kann nicht mit der Benutzerrolle aufgerufen werden. 
+Hier muss man nur mit den Admin Credentials arbeiten.
+
+# CI/CD mit Jenkins und Docker
+
+Erstellen eines Volumes mit folgendem Befehl: docker volume create jenkins_home_neu
+Starten des Jenkins mit folgendem Befehl: docker run -p 8080:8080 -p 50000:50000 -u root -v jenkins_home_neu:/var/jenkins_home -v /var/run/docker.sock:/var/run/docker.sock --name jenkins jenkins/jenkins:lts
+
+-v jenkins_home_neu:/var/jenkins_home  -> Verbindung zum Volume
+-v /var/run/docker.sock:/var/run/docker.sock -> Verbindung zum Docker Socket damit in diesem die Container gestartet werden können sollen.
+
+Beim Start den Secret aus der Command Line kopieren und im Jenkins Install Wizard verwenden.
+Alle notwendigen Plugins installieren. (Schlägt der Install fehlt, dann kann es beim bauen von Projekten zu Problemen führen.)
+
+Konfigurieren für den Bau von msa-utils
+1. Jenkins -> Konfiguration der Hilfsprogramme -> JDK und Maven installieren.
+2. Konfiguration im Job vornehmen -> github Repo eintragen und maven goals definieren clean install package.
+3. Der Job muss erfolgreich durchlaufen.
+
+# Tracing mit Jaeger
+
+msa-utils/jaeger/run-jaeger.sh
+
+http://localhost:16686
+
+In msa-checkout und msa-stock:
+
+<dependency>
+    <groupId>io.opentracing.contrib</groupId>
+    <artifactId>opentracing-spring-jaeger-cloud-starter</artifactId>
+    <version>1.0.1</version>
+</dependency>
+
+POST checkout
+
+jaeger Konsolse ansehen.
+
+Blick auf Dependencies/DAG
+
+Trace / JSON
+
+Achtung relevant nur für REST Kommunikation:
+
+
+# Optional Hystrix als Circuit Breaker bei synchroner Kommunikation
+
+Im Checkout Projekt:
+
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-hystrix</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-hystrix-dashboard</artifactId>
+</dependency>
+
+
+@EnableCircuitBreaker
+@SpringBootApplication
+
+
+@HystrixCommand(fallbackMethod = "areArticlesAvailableFallback")
+public boolean areArticlesAvailable(Basket basket) {
+
+    return basket.getItems().stream().allMatch(item -> {
+        System.out.println("item = " + item);
+                Stock stock = rest.getForObject("http://localhost:8081/stocks/{uuid}", Stock.class, item.getArticleId());
+                return stock.getQuantity() >= item.getQuantity();
+            }
+    );
+}
+
+public boolean areArticlesAvailableFallback(Basket basket, Throwable t) {
+    // TODO use the Throwable to get the reason for the wrapped call to fail
+    Map<String,Object> entries = new HashMap();
+    entries.put("fallback", "Sending Basket: " + basket);
+
+    log.error(appendEntries(entries),"");
+
+    return true;
+}
+
+
+## Hystrix Dashboard
+
+@SpringBootApplication
+@EnableDiscoveryClient
+@EnableCircuitBreaker
+@EnableHystrixDashboard
+public class CheckoutApplication {
+
+
+In: http://localhost:8082/actuator/mappings hystrix Suchen
+
+http://localhost:8082/hystrix
+
+
+Im Browser öffnen versuchen ( Achtung geht nur mit manchen Browser)
+http://localhost:8082/actuator/hystrix.stream/
+
+
+Formular:
+- http://localhost:8082/actuator/hystrix.stream/
+- Monitor Stream klicken
+
+Checkout durchführen!

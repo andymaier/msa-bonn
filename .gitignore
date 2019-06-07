@@ -2,3 +2,4 @@ logstash-7.1.1
 prometheus-2.10.0.darwin-amd64
 kibana-7.1.1-darwin-x86_64
 elasticsearch-7.1.1
+kafka*
